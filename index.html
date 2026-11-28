@@ -270,6 +270,7 @@ window.XCLEAN_CONFIG = {
 
 const PERMS = {
   viewSales:      { owner: 1, manager: 1, cashier: 1, employee: 0 },
+  viewFinance:    { owner: 1, manager: 1, cashier: 0, employee: 0 },
   editPrices:     { owner: 1, manager: 1, cashier: 0, employee: 0 },
   recordExpenses: { owner: 1, manager: 1, cashier: 0, employee: 0 },
   voidInvoices:   { owner: 1, manager: 1, cashier: 0, employee: 0 },
@@ -328,6 +329,12 @@ class LocalShim {
     return this._pub(p);
   }
   async signOut() { localStorage.removeItem(this._sessionKey); }
+  async changePassword(pw) {
+    const id = localStorage.getItem(this._sessionKey);
+    const p = id && this.store.profiles.find(x => x.id === id);
+    if (!p) throw new Error('غير مسجل الدخول');
+    p.password = pw; this._save();
+  }
   async user() {
     const id = localStorage.getItem(this._sessionKey);
     const p = id && this.store.profiles.find(x => x.id === id && x.active);
@@ -412,6 +419,10 @@ class SupaBackend {
     return this.user();
   }
   async signOut() { await this.sb.auth.signOut(); }
+  async changePassword(pw) {
+    const { error } = await this.sb.auth.updateUser({ password: pw });
+    if (error) throw new Error('تعذر تغيير كلمة المرور: ' + (error.message || error));
+  }
   async user() {
     const { data } = await this.sb.auth.getUser();
     if (!data || !data.user) return null;
@@ -705,7 +716,11 @@ Views.dashboard = async function (root) {
   const newCustomers = customers.filter(c => U.dayOf(c.created_at) === today).length;
   // top services
   const svcCount = {};
-  for (const it of items) svcCount[it.service_id] = (svcCount[it.service_id] || 0) + Number(it.qty || 1);
+  const liveIds = new Set(live.map(o => o.id));
+  for (const it of items) {
+    if (!liveIds.has(it.order_id) || it.removed) continue;
+    svcCount[it.service_id] = (svcCount[it.service_id] || 0) + Number(it.qty || 1);
+  }
   const topSvc = Object.entries(svcCount).sort((a, b) => b[1] - a[1]).slice(0, 3)
     .map(([sid, n]) => ({ name: (services.find(s => s.id === sid) || {}).name || '—', n }));
   // top workers (multi-worker aware)
@@ -2417,8 +2432,7 @@ Views.settings = async function (root) {
   if (pwBtn) pwBtn.onclick = async () => {
     const v = root.querySelector('#pw-new').value;
     if (!v || v.length < 8) { U.toast('كلمة السر أقل من ٨ أحرف', 'err'); return; }
-    const { error } = await DB.impl.sb.auth.updateUser({ password: v });
-    if (error) { U.toast('تعذر تغيير كلمة السر: ' + error.message, 'err'); return; }
+    try { await DB.impl.changePassword(v); } catch (e) { U.toast(e.message, 'err'); return; }
     root.querySelector('#pw-new').value = '';
     U.toast('تم تغيير كلمة السر', 'ok');
   };
@@ -2453,7 +2467,7 @@ const App = {
     ['operations', 'التشغيل', 'car', null],
     ['services', 'الخدمات والأسعار', 'tag', null],
     ['invoices', 'الفواتير', 'receipt', null],
-    ['finance', 'المالية', 'money', 'viewSales'],
+    ['finance', 'المالية', 'money', 'viewFinance'],
     ['employees', 'العاملون', 'users', null],
     ['customers', 'العملاء', 'users', null],
     ['loyalty', 'الولاء', 'gift', null],
@@ -2479,6 +2493,7 @@ const App = {
     const app = document.getElementById('app');
     if (!App.user) { App.renderLogin(app); return; }
     const nav = App.NAV.filter(([, , , perm]) => !perm || DB.can(App.user, perm));
+    if (!nav.some(([k]) => k === App.view)) App.view = 'dashboard';
     app.innerHTML = `<div class="shell">
       <div class="sidebar"><div class="brand">X Clean<small>إدارة المغسلة</small></div>
         ${nav.map(([k, ar, ic]) => `<button class="nav-item ${App.view === k ? 'active' : ''}" data-v="${k}">${U.icon(ic)} ${ar}</button>`).join('')}
@@ -2486,16 +2501,35 @@ const App = {
       <div class="main">
         <div class="topbar"><h2>${(App.NAV.find(n => n[0] === App.view) || [])[1] || ''}</h2>
           <div class="who"><b>${U.esc(App.user.name)}</b> — ${U.esc(App.user.role)}
+          <button class="btn small ghost" id="chpw">كلمة المرور</button>
           <button class="btn small ghost" id="logout">خروج</button></div></div>
         <div id="view"></div>
       </div>
       <div class="bottombar">${nav.slice(0, 6).map(([k, ar, ic]) => `<button class="nav-item ${App.view === k ? 'active' : ''}" data-v="${k}">${U.icon(ic)}<span>${ar}</span></button>`).join('')}</div>
     </div>`;
     app.querySelectorAll('.nav-item').forEach(b => b.onclick = () => App.go(b.dataset.v));
+    const chpw = app.querySelector('#chpw'); if (chpw) chpw.onclick = () => App.changePassword();
     app.querySelector('#logout').onclick = async () => { await DB.impl.signOut(); App.user = null; App.render(); };
     Views[App.view](document.getElementById('view'));
   },
   go(view) { App.view = view; App.render(); },
+  changePassword() {
+    const bg = U.modal(`<h3>تغيير كلمة المرور</h3>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:10px">كلمة مرور جديدة لحسابك، ٨ أحرف على الأقل.</p>
+      <div class="frm">
+        <div class="field"><label>كلمة المرور الجديدة</label><input id="cp-p1" type="password" autocomplete="new-password"></div>
+        <div class="field"><label>تأكيد كلمة المرور</label><input id="cp-p2" type="password" autocomplete="new-password"></div>
+      </div>
+      <div class="btn-row"><button class="btn" id="cp-save">حفظ</button><button class="btn ghost" id="cp-cancel">إلغاء</button></div>`);
+    bg.querySelector('#cp-cancel').onclick = U.closeModal;
+    bg.querySelector('#cp-save').onclick = async () => {
+      const p1 = bg.querySelector('#cp-p1').value, p2 = bg.querySelector('#cp-p2').value;
+      if (p1.length < 8) { U.toast('كلمة المرور أقل من ٨ أحرف', 'err'); return; }
+      if (p1 !== p2) { U.toast('كلمتا المرور غير متطابقتين', 'err'); return; }
+      try { await DB.impl.changePassword(p1); U.closeModal(); U.toast('تم تغيير كلمة المرور', 'ok'); }
+      catch (e) { U.toast(e.message, 'err'); }
+    };
+  },
   renderLogin(app) {
     app.innerHTML = `<div class="login-wrap"><div class="login-card">
       <h1>X Clean</h1><div class="sub">نظام إدارة مغسلة السيارات</div>
