@@ -1832,7 +1832,7 @@ Views.reports = async function (root) {
     const out = root.querySelector('#rp-out');
     out.innerHTML = `<div id="print-area"><h3 style="margin-bottom:10px">${U.esc(title)} — من ${App.repFrom} إلى ${App.repTo}</h3>
       <div class="tbl-wrap"><table class="tbl"><thead><tr>${aoa[0].map(h => `<th>${U.esc(h)}</th>`).join('')}</tr></thead>
-      <tbody>${aoa.slice(1).map(r => `<tr>${r.map(c => `<td>${typeof c === 'number' ? U.money(c) : U.esc(String(c))}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${aoa[0].length}" class="empty">لا بيانات في الفترة</td></tr>`}</tbody></table></div></div>`;
+      <tbody>${aoa.slice(1).map(r => `<tr>${r.map((c, ci) => `<td>${typeof c === 'number' ? (/عدد|العدد|الكمية/.test(String(aoa[0][ci] || '')) ? c.toLocaleString('ar-EG') : U.money(c)) : U.esc(String(c))}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${aoa[0].length}" class="empty">لا بيانات في الفترة</td></tr>`}</tbody></table></div></div>`;
   };
   root.querySelector('#rp-run').onclick = run;
   root.querySelector('#rp-xlsx').onclick = () => { if (!lastAOA) { U.toast('اعرض التقرير أولًا', 'err'); return; } U.xlsxDownload('xclean-report.xlsx', { [lastAOA.title]: lastAOA.aoa }); };
