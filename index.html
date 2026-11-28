@@ -571,6 +571,7 @@ const U = {
     return U._cairoDay(d);
   },
   time(iso) { if (!iso) return '—'; const d = new Date(iso); return d.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Cairo' }); },
+  cairoInstant(naive) { const m = String(naive).match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/); if (!m) return naive; const target = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]); let guess = target; for (let i = 0; i < 3; i++) { const p = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo', hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).formatToParts(new Date(guess)); const g = t => p.find(x => x.type === t).value; const shown = Date.UTC(+g('year'), +g('month') - 1, +g('day'), +g('hour') % 24, +g('minute')); const diff = target - shown; if (!diff) break; guess += diff; } return new Date(guess).toISOString(); },
   dt(iso) { if (!iso) return '—'; return U.dayOf(iso) + ' ' + U.time(iso); },
   toast(msg, kind) {
     let t = document.getElementById('toast');
@@ -1137,7 +1138,7 @@ Views._orderDetail = async function (orderId, onDone) {
         const item = await DB.impl.get('inventory_items', mv.item_id);
         if (!item) continue;
         if (DB.mode !== 'supabase') await DB.impl.update('inventory_items', item.id, { qty: Math.round((Number(item.qty) + Number(mv.qty)) * 1000) / 1000 });
-        await DB.impl.insert('inventory_moves', { item_id: item.id, kind: 'consume', qty: -Number(mv.qty), order_id: orderId, note: 'عكس استهلاك بسبب إلغاء طلب #' + orderId.slice(-4) });
+        await DB.impl.insert('inventory_moves', { item_id: item.id, kind: 'consume', qty: -Number(mv.qty), order_id: orderId, note: 'عكس استهلاك بسبب إلغاء طلب #' + o.order_no });
       }
       if (cust && ptsBack > 0) {
         await DB.impl.update('customers', cust.id, { points: Number(cust.points || 0) - ptsBack });
@@ -2268,7 +2269,7 @@ Views._consumeForOrder = async function (orderId) {
       const used = Number(r.qty_per_service) * Number(it.qty || 1);
       if (DB.mode !== 'supabase') await DB.impl.update('inventory_items', item.id, { qty: Math.round((Number(item.qty) - used) * 1000) / 1000 });
   // cloud: DB trigger trg_consume_stock lowers stock when a consume move is inserted
-      await DB.impl.insert('inventory_moves', { item_id: item.id, kind: 'consume', qty: used, order_id: orderId, note: 'طلب #' + orderId.slice(-4) });
+      await DB.impl.insert('inventory_moves', { item_id: item.id, kind: 'consume', qty: used, order_id: orderId, note: 'طلب #' + (((await DB.impl.get('orders', orderId)) || {}).order_no || orderId.slice(-4)) });
     }
   }
 };
@@ -2311,7 +2312,7 @@ Views.bookings = async function (root) {
     bg.querySelector('#bk-save').onclick = async () => {
       const name = bg.querySelector('#bk-name').value.trim();
       if (!name) { U.toast('اكتب اسم العميل', 'err'); return; }
-      const dt = bg.querySelector('#bk-date').value + 'T' + bg.querySelector('#bk-time').value;
+      const dt = U.cairoInstant(bg.querySelector('#bk-date').value + 'T' + bg.querySelector('#bk-time').value);
       const svcId = bg.querySelector('#bk-svc').value;
       // overlap check: block if another active booking overlaps this one's duration window
       const svc = svcId ? services.find(s => s.id === svcId) : null;
