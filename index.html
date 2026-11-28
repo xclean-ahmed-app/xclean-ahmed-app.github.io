@@ -306,7 +306,7 @@ class LocalShim {
       profiles: [], customers: [], vehicles: [], services: [], packages: [],
       orders: [], order_items: [], payments: [], expenses: [],
       workers: [], worker_finance: [], attendance: [],
-      inventory_items: [], inventory_moves: [], service_consumption: [],
+      inventory_items: [], inventory_moves: [], service_consumption: [], expense_files: [],
       loyalty_moves: [], bookings: [], shift_closes: [], audit_log: [], partners: [], capital_moves: [], treasury_moves: [],
       settings: [], counters: {},
     };
@@ -492,7 +492,7 @@ class SupaBackend {
       .subscribe();
   }
   async exportAll() {
-    const tables = ['customers','vehicles','services','packages','orders','order_items','payments','expenses','workers','worker_pay','worker_finance','attendance','inventory_items','inventory_moves','service_consumption','loyalty_moves','bookings','shift_closes','settings','partners','capital_moves','treasury_moves'];
+    const tables = ['customers','vehicles','services','packages','orders','order_items','payments','expenses','workers','worker_pay','worker_finance','attendance','inventory_items','inventory_moves','service_consumption','loyalty_moves','bookings','shift_closes','settings','partners','capital_moves','treasury_moves','expense_files'];
     const out = {};
     for (const t of tables) out[t] = await this.list(t);
     const s = {}; for (const r of out.settings) s[r.key] = r.value;
@@ -626,6 +626,7 @@ const U = {
       img.src = URL.createObjectURL(file);
     });
   },
+  fileToDataUrl(file) { return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); }); },
   downloadFile(name, content, mime) {
     const blob = content instanceof Blob ? content : new Blob([content], { type: mime || 'text/plain;charset=utf-8' });
     const a = document.createElement('a');
@@ -1376,24 +1377,55 @@ Views._finExpenses = async function (body) {
       <div class="field"><label>المبلغ</label><input type="number" id="ex-amt" min="0" step="0.5"></div>
       ${DB.v4 ? '<div class="field"><label>المستفيد / دُفع لمين (مطلوب)</label><input id="ex-payee"></div>' : ''}
       <div class="field"><label>دُفع من</label><select id="ex-method"><option value="cash">نقدي (الخزنة)</option><option value="transfer">تحويل / بنك</option></select></div>
-      <div class="field"><label>ملاحظة</label><input id="ex-note"></div></div>
+      <div class="field"><label>ملاحظة</label><input id="ex-note"></div>
+      <div class="field full"><label>مرفق (صورة إيصال أو PDF — اختياري)</label><input type="file" id="ex-file" accept="image/*,application/pdf"><div class="wa-note" id="ex-file-hint">الصورة تُضغط تلقائيًا. PDF حتى ٧٠٠ كيلوبايت.</div></div></div>
       <div class="btn-row"><button class="btn" id="ex-save">تسجيل</button></div></div>` : ''}
     <div class="panel"><h3>سجل المصروفات</h3><div class="tbl-wrap"><table class="tbl">
-      <thead><tr><th>التاريخ</th><th>التصنيف</th><th>المبلغ</th><th>دُفع من</th><th>المستفيد</th><th>ملاحظة / إجراء</th></tr></thead>
-      <tbody>${expenses.map(e => `<tr style="${e.voided ? 'opacity:.5;text-decoration:line-through' : ''}"><td>${e.date}</td><td>${U.esc(e.category)}</td><td>${U.money(e.amount)}</td><td>${e.method === 'transfer' ? 'تحويل' : 'نقدي'}</td><td>${U.esc(e.payee || '—')}</td><td>${U.esc(e.note || '')}${e.voided ? ' [ملغى: ' + U.esc(e.void_reason || '') + ']' : ''}${canVoid && !e.voided ? `<br><button class="btn small ghost ex-void" data-id="${e.id}">إلغاء</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">لا مصروفات</td></tr>'}</tbody></table></div></div>`;
+      <thead><tr><th>التاريخ</th><th>التصنيف</th><th>المبلغ</th><th>ملاحظة / إجراء</th><th>مرفق</th></tr></thead>
+      <tbody>${expenses.map(e => `<tr style="${e.voided ? 'opacity:.5;text-decoration:line-through' : ''}"><td>${e.date}</td><td>${U.esc(e.category)}</td><td>${U.money(e.amount)}</td><td>${e.method === 'transfer' ? 'تحويل' : 'نقدي'}</td><td>${U.esc(e.payee || '—')}</td><td>${U.esc(e.note || '')}${e.voided ? ' [ملغى: ' + U.esc(e.void_reason || '') + ']' : ''}${canVoid && !e.voided ? `<br><button class="btn small ghost ex-void" data-id="${e.id}">إلغاء</button>` : ''}</td><td>${e.attach_name ? `<button class="btn small ghost ex-view" data-id="${e.id}">عرض</button>` : '—'}</td></tr>`).join('') || '<tr><td colspan="7" class="empty">لا مصروفات</td></tr>'}</tbody></table></div></div>`;
   const sv = body.querySelector('#ex-save');
   if (sv) sv.onclick = async () => {
     const amt = Number(body.querySelector('#ex-amt').value) || 0;
     if (amt <= 0) { U.toast('اكتب مبلغًا صحيحًا', 'err'); return; }
     const payeeEl = body.querySelector('#ex-payee'); const payee = payeeEl ? payeeEl.value.trim() : undefined;
     if (payeeEl && !payee) { U.toast('اكتب المستفيد (دُفع لمين)', 'err'); return; }
-    await DB.impl.insert('expenses', {
+    const fileEl = body.querySelector('#ex-file');
+    const file = fileEl && fileEl.files && fileEl.files[0] ? fileEl.files[0] : null;
+    let att = null;
+    if (file) {
+      try {
+        if (/^image\//.test(file.type)) att = { name: file.name, mime: 'image/jpeg', data: await U.photoToDataUrl(file, 1000, 0.7) };
+        else if (file.type === 'application/pdf') {
+          if (file.size > 700 * 1024) { U.toast('ملف PDF كبير: الحد ٧٠٠ كيلوبايت', 'err'); return; }
+          att = { name: file.name, mime: 'application/pdf', data: await U.fileToDataUrl(file) };
+        } else { U.toast('نوع الملف غير مدعوم: صورة أو PDF', 'err'); return; }
+      } catch (e) { U.toast('تعذّر قراءة الملف', 'err'); return; }
+    }
+    const saved = await DB.impl.insert('expenses', {
       ...(payeeEl ? { payee } : {}),
+      ...(att ? { attach_name: att.name, attach_mime: att.mime } : {}),
       date: body.querySelector('#ex-date').value, category: body.querySelector('#ex-cat').value,
       amount: amt, method: body.querySelector('#ex-method').value, note: body.querySelector('#ex-note').value.trim(), recorded_by: App.user.id,
     });
+    if (att) {
+      try { await DB.impl.insert('expense_files', { expense_id: saved.id, name: att.name, mime: att.mime, data: att.data }); }
+      catch (e) { U.toast('اتسجل المصروف لكن المرفق فشل: ' + e.message, 'err'); }
+    }
     U.toast('تم تسجيل المصروف', 'ok'); App.go('finance');
   };
+  body.querySelectorAll('.ex-view').forEach(b => b.onclick = async () => {
+    const row = await DB.impl.get('expenses', b.dataset.id);
+    if (!row || !row.attach_name) { U.toast('لا مرفق لهذا المصروف', 'err'); return; }
+    let f = null;
+    try { f = (await DB.impl.list('expense_files', { where: { expense_id: row.id } }))[0]; } catch (e) { f = null; }
+    if (!f) { U.toast('ملف المرفق غير موجود', 'err'); return; }
+    const isImg = /^image\//.test(f.mime || '');
+    const bg = U.modal(`<h3>مرفق المصروف — ${U.esc(row.date)}</h3><div style="font-size:13px;color:var(--muted);margin-bottom:8px">${U.esc(row.category)} — ${U.money(row.amount)} — ${U.esc(row.attach_name)}</div>
+      ${isImg ? `<img src="${f.data}" style="max-width:100%;border-radius:10px;display:block">` : '<p style="font-size:13px">ملف PDF — استخدم زر التحميل.</p>'}
+      <div class="btn-row"><button class="btn" id="ef-dl">تحميل الملف</button><button class="btn ghost" id="ef-close">إغلاق</button></div>`);
+    bg.querySelector('#ef-close').onclick = U.closeModal;
+    bg.querySelector('#ef-dl').onclick = () => { const a = document.createElement('a'); a.href = f.data; a.download = f.name || 'receipt'; a.click(); };
+  });
   body.querySelectorAll('.ex-void').forEach(b => b.onclick = async () => {
     const e = expenses.find(x => x.id === b.dataset.id);
     const isPurchase = e.category === 'مشتريات خامات';
