@@ -306,7 +306,7 @@ class LocalShim {
       profiles: [], customers: [], vehicles: [], services: [], packages: [],
       orders: [], order_items: [], payments: [], expenses: [],
       workers: [], worker_finance: [], attendance: [],
-      inventory_items: [], inventory_moves: [], service_consumption: [], expense_files: [],
+      inventory_items: [], inventory_moves: [], service_consumption: [], expense_files: [], capital_files: [],
       loyalty_moves: [], bookings: [], shift_closes: [], audit_log: [], partners: [], capital_moves: [], treasury_moves: [],
       settings: [], counters: {},
     };
@@ -492,7 +492,7 @@ class SupaBackend {
       .subscribe();
   }
   async exportAll() {
-    const tables = ['customers','vehicles','services','packages','orders','order_items','payments','expenses','workers','worker_pay','worker_finance','attendance','inventory_items','inventory_moves','service_consumption','loyalty_moves','bookings','shift_closes','settings','partners','capital_moves','treasury_moves','expense_files'];
+    const tables = ['customers','vehicles','services','packages','orders','order_items','payments','expenses','workers','worker_pay','worker_finance','attendance','inventory_items','inventory_moves','service_consumption','loyalty_moves','bookings','shift_closes','settings','partners','capital_moves','treasury_moves','expense_files','capital_files'];
     const out = {};
     for (const t of tables) out[t] = await this.list(t);
     const s = {}; for (const r of out.settings) s[r.key] = r.value;
@@ -1968,11 +1968,12 @@ Views._finCapital = async function (body) {
         <div class="field"><label>المبلغ</label><input type="number" id="cm-amt" min="0" step="0.5"></div>
         <div class="field"><label>التاريخ</label><input type="date" id="cm-date" value="${U.today()}"></div>
         <div class="field"><label>طريقة الدفع</label><select id="cm-method"><option value="cash">نقدي (الخزنة)</option><option value="transfer">تحويل / بنك</option></select></div>
-        <div class="field"><label>السبب / البيان (مطلوب)</label><input id="cm-note"></div></div>
+        <div class="field"><label>السبب / البيان (مطلوب)</label><input id="cm-note"></div>
+        <div class="field full"><label>مرفق (صورة إيصال أو PDF — اختياري)</label><input type="file" id="cm-file" accept="image/*,application/pdf"><div class="wa-note" id="cm-file-hint">الصورة تُضغط تلقائيًا. PDF حتى ٧٠٠ كيلوبايت.</div></div></div>
       <div class="btn-row"><button class="btn" id="cm-save">تسجيل الحركة</button></div></div>
-    <div class="panel"><h3>سجل الحركات</h3><div class="tbl-wrap"><table class="tbl"><thead><tr><th>التاريخ</th><th>الشريك</th><th>النوع</th><th>المبلغ</th><th>الطريقة</th><th>السبب</th><th>سجّلها</th><th></th></tr></thead>
+    <div class="panel"><h3>سجل الحركات</h3><div class="tbl-wrap"><table class="tbl"><thead><tr><th>التاريخ</th><th>الشريك</th><th>النوع</th><th>المبلغ</th><th>الطريقة</th><th>السبب</th><th>سجّلها</th><th>مرفق</th><th></th></tr></thead>
       <tbody>${moves.map(m => `<tr style="${m.voided ? 'opacity:.5;text-decoration:line-through' : ''}"><td>${m.date}</td><td>${U.esc(pname(m.partner_id))}</td><td>${m.kind === 'contribution' ? 'مساهمة' : 'سحب'}</td><td>${U.money(m.amount)}</td><td>${METHOD[m.method] || ''}</td><td>${U.esc(m.note || '')}${m.voided ? ' (ملغاة: ' + U.esc(m.void_reason || '') + ')' : ''}</td><td>${U.esc(m.created_by_name || '')}</td>
-        <td>${m.voided ? '' : `<button class="btn small ghost cm-void" data-id="${m.id}">إلغاء</button>`}</td></tr>`).join('') || '<tr><td colspan="8" class="empty">لا حركات</td></tr>'}</tbody></table></div>
+        <td>${m.attach_name ? `<button class="btn small ghost cm-view" data-id="${m.id}">عرض</button>` : '—'}</td><td>${m.voided ? '' : `<button class="btn small ghost cm-void" data-id="${m.id}">إلغاء</button>`}</td></tr>`).join('') || '<tr><td colspan="8" class="empty">لا حركات</td></tr>'}</tbody></table></div>
       <p class="wa-note">الحركة لا تُحذف: الإلغاء يُبقيها ظاهرة مشطوبة بسببها ولا تدخل الأرصدة.</p></div>`;
   body.querySelector('#pt-add').onclick = async () => {
     const name = body.querySelector('#pt-name').value.trim();
@@ -2007,9 +2008,38 @@ Views._finCapital = async function (body) {
     if (!(amt > 0)) { U.toast('اكتب مبلغًا أكبر من صفر', 'err'); return; }
     if (!date) { U.toast('اختر التاريخ', 'err'); return; }
     if (!note) { U.toast('اكتب السبب / البيان', 'err'); return; }
-    await DB.impl.insert('capital_moves', { partner_id: pid, kind: body.querySelector('#cm-kind').value, amount: amt, date, method: body.querySelector('#cm-method').value, note, voided: false, created_by: App.user.id, created_by_name: App.user.name });
+    const fileEl = body.querySelector('#cm-file');
+    const file = fileEl && fileEl.files && fileEl.files[0] ? fileEl.files[0] : null;
+    let att = null;
+    if (file) {
+      try {
+        if (/^image\//.test(file.type)) att = { name: file.name, mime: 'image/jpeg', data: await U.photoToDataUrl(file, 1000, 0.7) };
+        else if (file.type === 'application/pdf') {
+          if (file.size > 700 * 1024) { U.toast('ملف PDF كبير: الحد ٧٠٠ كيلوبايت', 'err'); return; }
+          att = { name: file.name, mime: 'application/pdf', data: await U.fileToDataUrl(file) };
+        } else { U.toast('نوع الملف غير مدعوم: صورة أو PDF', 'err'); return; }
+      } catch (e) { U.toast('تعذّر قراءة الملف', 'err'); return; }
+    }
+    const saved = await DB.impl.insert('capital_moves', { ...(att ? { attach_name: att.name, attach_mime: att.mime } : {}), partner_id: pid, kind: body.querySelector('#cm-kind').value, amount: amt, date, method: body.querySelector('#cm-method').value, note, voided: false, created_by: App.user.id, created_by_name: App.user.name });
+    if (att) {
+      try { await DB.impl.insert('capital_files', { capital_move_id: saved.id, name: att.name, mime: att.mime, data: att.data }); }
+      catch (e) { U.toast('اتسجلت الحركة لكن المرفق فشل: ' + e.message, 'err'); }
+    }
     U.toast('تم تسجيل الحركة', 'ok'); App.go('finance');
   };
+  body.querySelectorAll('.cm-view').forEach(b => b.onclick = async () => {
+    const row = await DB.impl.get('capital_moves', b.dataset.id);
+    if (!row || !row.attach_name) { U.toast('لا مرفق لهذه الحركة', 'err'); return; }
+    let f = null;
+    try { f = (await DB.impl.list('capital_files', { where: { capital_move_id: row.id } }))[0]; } catch (e) { f = null; }
+    if (!f) { U.toast('ملف المرفق غير موجود', 'err'); return; }
+    const isImg = /^image\//.test(f.mime || '');
+    const bg = U.modal(`<h3>مرفق حركة رأس المال — ${U.esc(row.date)}</h3><div style="font-size:13px;color:var(--muted);margin-bottom:8px">${U.esc(row.kind === 'contribution' ? 'مساهمة' : 'سحب')} — ${U.money(row.amount)} — ${U.esc(row.attach_name)}</div>
+      ${isImg ? `<img src="${f.data}" style="max-width:100%;border-radius:10px;display:block">` : '<p style="font-size:13px">ملف PDF — استخدم زر التحميل.</p>'}
+      <div class="btn-row"><button class="btn" id="cf-dl">تحميل الملف</button><button class="btn ghost" id="cf-close">إغلاق</button></div>`);
+    bg.querySelector('#cf-close').onclick = U.closeModal;
+    bg.querySelector('#cf-dl').onclick = () => { const a = document.createElement('a'); a.href = f.data; a.download = f.name || 'receipt'; a.click(); };
+  });
   body.querySelectorAll('.cm-void').forEach(b => b.onclick = () => {
     const bg = U.modal(`<h3>إلغاء حركة</h3><div class="field"><label>سبب الإلغاء (مطلوب)</label><input id="cv-reason"></div>
       <div class="btn-row"><button class="btn danger" id="cv-ok">إلغاء الحركة</button><button class="btn ghost" id="cv-cancel">رجوع</button></div>`);
